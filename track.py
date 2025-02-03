@@ -1,21 +1,34 @@
 from ultralytics import YOLO
 import cv2
 import argparse
-import sys
+import ffmpeg
 import torch
+import os
+import sys
 
 class ObjectTracker():
 
-    def __init__(self, in_video_path, out_video_path):
-        self.model = YOLO('yolo11n.pt')
+    def __init__(self, in_video_path: str, out_video_path: str) -> None:
+        self.model = YOLO('./yolo/yolo11n.pt')
         if torch.cuda.is_available():
             self.model.to('cuda')
-        self.yaml_path = "./bytetrack.yaml"
+        self.yaml_path = "./yolo/bytetrack.yaml"
         self.in_video_path = in_video_path
         self.out_video_path = out_video_path
         self.fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 
-    def track_all_objects(self):
+    def determine_x(self, center: int, crop_width: int, input_width: int) -> tuple:
+        x_min = int(center - crop_width / 2)
+        x_max = int(center + crop_width / 2)
+        # cannot crop outside of image
+        if x_min < 0: 
+            x_min, x_max = 0, crop_width
+        if x_max > input_width:
+            x_max = input_width
+            x_min = input_width - crop_width
+        return (x_min, x_max)
+
+    def track_all_objects(self) -> None:
 
         cap = cv2.VideoCapture(self.in_video_path)
         fps = round(cap.get(cv2.CAP_PROP_FPS))
@@ -52,14 +65,14 @@ class ObjectTracker():
         cv2.destroyAllWindows()
 
 
-    def track_object(self, track_id, crop_size):
-        # frame_count = 0
+    def track_object(self, track_id: int, crop_size: tuple) -> None:
+
         cap = cv2.VideoCapture(self.in_video_path)
         fps = round(cap.get(cv2.CAP_PROP_FPS))
         video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        out_width = crop_size[0] if crop_size[0] <= video_width else video_width # avoid black bars
-        out_height = crop_size[1] if crop_size[1] <= video_height else video_height # avoid black bars
+        out_width = crop_size[0] if crop_size[0] <= video_width else video_width # avoid cropping outside the image
+        out_height = crop_size[1] if crop_size[1] <= video_height else video_height # avoid cropping outside the image
 
         output_video = cv2.VideoWriter(self.out_video_path, self.fourcc, fps, (out_width, out_height))
 
@@ -68,9 +81,6 @@ class ObjectTracker():
             if not ret:
                 print("Error retriveing frame while tracking all objects.")
                 return
-            # frame_count += 1
-            # if frame_count % smoothness != 0:
-            #     continue
 
             results = self.model.track(source=frame, persist=True, tracker=self.yaml_path)
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
@@ -81,9 +91,8 @@ class ObjectTracker():
             for box, id in zip(boxes, ids):
                 if track_id == id:
                     x_center = int(box[0] + (box[2] - box[0]) / 2)
-                    # y_center = int(box[1] + (box[3] - box[1]) / 2)
-                    x_min = int(x_center - out_width / 2)
-                    x_max = int(x_center + out_width / 2)
+                    x_min, x_max = self.determine_x(x_center, out_width, video_width)
+                    
                     y_min = int((video_height / 2) - (out_height / 2))
                     y_max = int((video_height / 2) + (out_height / 2))
 
@@ -95,7 +104,6 @@ class ObjectTracker():
         output_video.release()
         cap.release()
         cv2.destroyAllWindows()
-
 
 def run_track_all_objects(input, output):
     ot = ObjectTracker(input, output)
@@ -119,7 +127,15 @@ def main():
 
     args = parser.parse_args()
 
-    output_video = "./out/" + args.input_video[:-4] + "_out.MP4"
+    if not os.path.exists(args.input_video):
+        print(f"Input file {args.input_video} does not exist.")
+        sys.exit(0)
+
+    if not os.path.exists("./out/"):
+        os.mkdir("./out/")
+
+    output_video = "./out/" + args.input_video.split("/")[-1][:-4] + "_out.MP4" # removes directories and the .mp4
+    print(output_video)
 
     if args.track_id == None:
         print(f"Tracking all objects in video file {args.input_video}")
